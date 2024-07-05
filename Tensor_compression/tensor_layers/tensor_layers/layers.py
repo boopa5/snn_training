@@ -77,7 +77,7 @@ class TensorizedEmbedding(nn.Module):
         x = torch.flatten(x)
 
         if config_forward==None:
-            factors =self.tensor.get_factors(prune_mask=False)
+            factors = self.tensor.get_factors(prune_mask=False)
             rows = tensorized_lookup(x,factors,self.cum_prod,self.shape,'TensorTrainMatrix')
         else:
             factors = self.tensor.get_factors(prune_mask=config_forward.prune_mask,threshold=config_forward.threshold)
