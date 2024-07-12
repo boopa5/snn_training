@@ -136,11 +136,12 @@ class TensorizedEmbedding_order4(nn.Module):
         config_tensor = config_class(shape=config.shape,ranks=config.ranks,target_sdv=target_stddev)
 
         self.tensor = TensorTrainMatrix(config_tensor)
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        self.ind2coord = self.get_indices_dict().to(device)
         
-        self.ind2coord = self.get_indices_dict().to('cuda')
-        
-        self.dict_tensor = torch.zeros(in_features,dtype=torch.long,device='cuda')
-        self.dict_range = torch.arange(0,in_features,dtype=torch.long,device='cuda')
+        self.dict_tensor = torch.zeros(in_features,dtype=torch.long,device=device)
+        self.dict_range = torch.arange(0,in_features,dtype=torch.long,device=device)
 
 
         self.cum_prod = get_cum_prod(self.shape)

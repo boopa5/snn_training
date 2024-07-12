@@ -15,10 +15,10 @@ from torch.utils.data import Dataset
 import numpy as np
 import sklearn.metrics
 
-from tensor_layers.tensor_layers.layers import TensorizedEmbedding, TensorizedLinear_module
+from tensor_layers.layers import TensorizedEmbedding, TensorizedLinear_module
 
-from pytorch_meta_optimizer.meta_optimizer.meta_optimizer import MetaModel, MetaOptimizer
-from pytorch_meta_optimizer.meta_optimizer.fo_meta_optimizer import FOMetaOptimizer
+from meta_optimizer.optimizee import MetaModel
+from meta_optimizer.nn_optimizer.foopt import FOOptimizer
 
 parser = argparse.ArgumentParser()
 
@@ -156,17 +156,17 @@ def collate_fn_cudagraph(batch):
 from torch.utils.data import DataLoader
 
 
-train_iter = torch.load('data/ATIS_train.pt')
+train_iter = torch.load('./examples/ATIS/data/ATIS_train.pt')
 if opt.use_cuda_graph:
     training_data = DataLoader(train_iter, batch_size=opt.batch_size, collate_fn=collate_fn_cudagraph, shuffle=True, drop_last=True)
 else:
     training_data = DataLoader(train_iter, batch_size=opt.batch_size, collate_fn=collate_fn_custom, shuffle=True)
 
 
-val_iter = torch.load('data/ATIS_valid.pt')
+val_iter = torch.load('./examples/ATIS/data/ATIS_valid.pt')
 validation_data = DataLoader(val_iter, batch_size=opt.batch_size, collate_fn=collate_fn_custom, shuffle=False)
 
-test_iter = torch.load('data/ATIS_test.pt')
+test_iter = torch.load('./examples/ATIS/data/ATIS_test.pt')
 test_data = DataLoader(test_iter, batch_size=opt.batch_size, collate_fn=collate_fn_custom, shuffle=False)
 
 
@@ -174,12 +174,12 @@ test_data = DataLoader(test_iter, batch_size=opt.batch_size, collate_fn=collate_
 
 
 
-device = torch.device('cuda')
+device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
 #Prepare model
 
-from tensor_layers.tensor_layers.utils import config_class
-from tensor_layers.tensor_layers.Transformer_tensor import Transformer_classification,Transformer_classification_SLU
+from tensor_layers.utils import config_class
+from tensor_layers.Transformer_tensor import Transformer_classification,Transformer_classification_SLU
 
 # transformer config
 D = {
@@ -387,17 +387,39 @@ def main():
     test_result = []
 
     optimizee = sample_model().to(device)
-    meta_optimizer = FOMetaOptimizer(MetaModel(optimizee), 2, 10).to(device)
+
+    meta_optimizer_config = {
+        'model': MetaModel(optimizee),
+        'num_layers': 1,
+        'hidden_size': 20,
+        'device': device
+    }
+
+    meta_optimizer = FOOptimizer(**meta_optimizer_config).to(device)
     meta_opt_opt = optim.Adam(meta_optimizer.parameters())
 
-    meta_optimizer = train_meta_optimizer(meta_optimizer, training_data, 10, 100, meta_opt_opt, 100, 10, device=device, config_forward=config_forward)
+# def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_epoch, optimizer, optimizer_steps, truncated_bptt_step, device='cuda', config_forward=None):
+    train_meta_optimizer_config = {
+        'meta_optimizer': meta_optimizer,
+        'training_data': training_data,
+        'num_epochs': 10,
+        'updates_per_epoch': 100,
+        'optimizer': meta_opt_opt,
+        'optimizer_steps': 200,
+        'truncated_bptt_step': 20,
+        'device': device,
+        'config_forward': config_forward
+    }
+
+
+    meta_optimizer = train_meta_optimizer(**train_meta_optimizer_config)
     
 
     
-    # if opt.use_cuda_graph:
-    #     # transformer = torch.compile(model)
-    #     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
-    #     static_tensors = build_graph(transformer,optimizer,loss_fn,opt.batch_size,opt.max_length,device)
+    if opt.use_cuda_graph:
+        # transformer = torch.compile(model)
+        loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
+        static_tensors = build_graph(transformer,optimizer,loss_fn,opt.batch_size,opt.max_length,device)
     
     # for epoch in range(epochs):
     #     start = time.time()
@@ -479,9 +501,9 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
             loss_MLM =  Loss(pred_slot, slot_label)
             initial_loss = Loss(pred,target)  + loss_MLM
 
-            for k in range(optimizer_steps // truncated_bptt_step):
+            for k in tqdm(range(optimizer_steps // truncated_bptt_step)):
                 # TBPTT
-                meta_optimizer.reset_lstm(keep_states=k>0, model=optimizee, use_cuda=device=='cuda')
+                meta_optimizer.reset_state(keep_states=k>0, model=optimizee)
                 loss_sum = 0
                 prev_loss = torch.zeros(1).to(device)
 
@@ -498,9 +520,10 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
                     optimizee.zero_grad()
                     loss.backward()
 
+
                     # Perform a meta update using gradients from model
                     # and return the current meta model saved in the optimizer
-                    meta_model = meta_optimizer.meta_update(optimizee, loss.data)
+                    meta_model = meta_optimizer.meta_update(optimizee)
 
                     # Compute a loss for a step the meta optimizer
                     pred, pred_slot = meta_model(w1,mask=attn,seg=seg,config_forward=config_forward)
@@ -508,20 +531,26 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
 
                     loss_MLM = Loss(pred_slot, slot_label)
                     loss = Loss(pred,target)  + loss_MLM
-
                     loss_sum += (loss - Variable(prev_loss))
-
                     prev_loss = loss.data
-                
+
+
                 meta_optimizer.zero_grad()
                 loss_sum.backward()
                 for param in meta_optimizer.parameters():
                     param.grad.data.clamp_(-1, 1)
                 optimizer.step()
 
-                decrease_in_loss += loss.data[0] / initial_loss.data[0]
-                final_loss += loss.data[0]
+                # decrease_in_loss += loss.data[0] / initial_loss.data[0]
+                # final_loss += loss.data[0]
+                decrease_in_loss += loss.item() / initial_loss.item()
+                final_loss += loss.item()
             
+            valid_loss, valid_accu, valid_slot_accu = eval_epoch(optimizee, validation_data, device,config_forward=config_forward)
+            print('  - (Validation) loss: {loss: 8.5f}, accuracy: {accu:3.3f} %, slot accuracy: {slot_accu:3.3f},'.format(
+                    loss=valid_loss, accu=100*valid_accu,slot_accu = 100*valid_slot_accu))
+
+
             print("Epoch: {}, final loss {}, average final/initial loss ratio: {}".format(epoch, final_loss / updates_per_epoch,
                                                                        decrease_in_loss / updates_per_epoch))
     
