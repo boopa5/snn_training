@@ -52,10 +52,10 @@ class ZOOptimizer(NNOptimizer):
         return o1.squeeze()
 
 
-    def meta_update(self, model, data, target):
+    def meta_update(self, model, model_inputs, target, loss_fn):
             # compute the zeroth-order gradient estimate of the model
             f_x = model(data)
-            loss = model.loss(f_x, target)
+            loss = loss_fn(f_x, target)
 
             self.step += 1
 
