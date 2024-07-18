@@ -74,29 +74,20 @@ class ZOOptimizer(NNOptimizer):
         return o1.squeeze()
 
 
-    def meta_update(self, model, model_input, loss_fn, target):
+    def meta_update(self, model, model_input, loss_fn):
         '''Update model using gradient from model '''
         flat_params = self.meta_model.get_flat_params()
 
-        flat_grads = [[] for _ in range(self.num_lstms)]
-        for name, p in model.named_parameters():
-            idx = self.param_LSTM_map[name]
-            for i in range(self.num_lstms):
-                flat_grads[i].append(torch.zeros_like(p).view(-1))
-
-            if p.grad is not None:
-                flat_grads[idx][-1] = p.grad.view(-1)
-
         self.step += 1
 
-        flat_grads = torch.zeros_like(model.get_params())
+        flat_grads = torch.zeros_like(self.meta_model.get_flat_params())
         for _ in range(self.q):
-            u = torch.randn_like(model.get_params())  # sampled query direction
-            flat_grads += self.GradientEstimate(model, model_input, loss_fn, target, u) * u
+            u = torch.randn_like(self.meta_model.get_flat_params())  # sampled query direction
+            flat_grads += self.GradientEstimate(model, model_input, loss_fn, u) * u
         flat_grads /= self.q
 
-        flat_grads = [torch.cat(flat_grad) for flat_grad in flat_grads]
-        
+        flat_grads = [flat_grads * mask for mask in self.param_masks]
+
         inputs = [Variable(flat_grad.view(-1, 1).unsqueeze(1)) for flat_grad in flat_grads]
 
         deltas = [self(x, idx) for idx, x in enumerate(inputs)]
@@ -106,31 +97,3 @@ class ZOOptimizer(NNOptimizer):
         self.meta_model.copy_params_to(model)
 
         return self.meta_model.model
-
-
-    def meta_update(self, model, model_inputs, target, loss_fn):
-            # compute the zeroth-order gradient estimate of the model
-            f_x = model(**model_inputs)
-            loss = loss_fn(f_x, target)
-
-            self.step += 1
-
-            flat_grads = torch.zeros_like(model.get_params())
-            for _ in range(self.q):
-                u = torch.randn_like(model.get_params())  # sampled query direction
-                flat_grads += self.GradientEstimate(model, model_inputs, target, u) * u
-            flat_grads /= self.q
-
-            flat_params = self.meta_model.get_flat_params()
-            inputs = Variable(flat_grads.view(-1, 1).unsqueeze(1))
-
-            # Meta update itself
-            delta = self(inputs)
-            flat_params = flat_params + delta
-
-            self.meta_model.set_flat_params(flat_params)
-
-            # Finally, copy values from the meta model to the normal one.
-            self.meta_model.copy_params_to(model)
-            # return self.meta_model.model, loss, f_x
-            return self.meta_model.model

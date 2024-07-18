@@ -9,52 +9,26 @@ from itertools import product
 
 
 class Optimizee(nn.Module):
-    def __init__(self):
+    def __init__(self, model, loss_fn):
         super(Optimizee, self).__init__()
+        self.model = model
+        self.loss_fn = loss_fn
 
 
-    @staticmethod
-    def dataset_loader(*input):
-        raise NotImplementedError
+    def get_flat_params(self):
+        return torch.nn.utils.parameters_to_vector(self.model.parameters())
 
 
-    def loss(self, *input):
-        raise NotImplementedError
-
-
-    def reset(self):
-        for module in self.modules():
-            if len(module._parameters) != 0:
-                for key in module._parameters.keys():
-                    module._parameters[key] = Variable(module._parameters[key].data)
-
-
-    def get_grads(self):
-        grads = []
-        for module in self.modules():
-            if len(module._parameters) != 0:
-                for key in module._parameters.keys():
-                    if module._parameters[key].grad is not None:
-                        grads.append(module._parameters[key].grad.view(-1))
-                    else:
-                        grads.append(torch.zeros_like(module._parameters[key]).view(-1))
-
-        return torch.cat(grads)    
-
-
-    def get_params(self):
-        return torch.nn.utils.parameters_to_vector(self.parameters())
-
-
-    def set_params(self, flat_params):
+    def set_flat_params(self, flat_params):
         offset = 0
-        for module in self.modules():
+        for module in self.model.modules():
             if len(module._parameters) != 0:
                 for key in module._parameters.keys():
                     param_shape = module._parameters[key].size()
                     param_flat_size = reduce(mul, param_shape, 1)
                     module._parameters[key] = flat_params[
                                                offset:offset + param_flat_size].view(*param_shape)
+                    offset += param_flat_size
 
 
     def get_params_size(self):
