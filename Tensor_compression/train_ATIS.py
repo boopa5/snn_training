@@ -20,6 +20,7 @@ from tensor_layers.layers import TensorizedEmbedding, TensorizedLinear_module
 from meta_optimizer.optimizee import MetaModel
 from meta_optimizer.nn_optimizer.foopt import FOOptimizer
 
+
 parser = argparse.ArgumentParser()
 
 
@@ -388,11 +389,25 @@ def main():
 
     optimizee = sample_model().to(device)
 
+    # for name, module in optimizee.named_parameters():
+    #     print(name)
+        # if modules_map[module]
+        # print(module._get_name())
+        # if module._get_name() == 'TensorTrain':
+        #     print(module)
+        #     print(module._parameters)
+        #     print("-"*50)
+        #     for child in module.children():
+        #         print(child)
+        #         print("-"*50)
+        # print("-"*50)
+
     meta_optimizer_config = {
         'model': MetaModel(optimizee),
         'num_layers': 1,
-        'hidden_size': 20,
-        'device': device
+        'hidden_size': 10,
+        'device': device,
+        'partition_func': lambda p_name: 1 if 'factors' in p_name else 0
     }
 
     meta_optimizer = FOOptimizer(**meta_optimizer_config).to(device)
@@ -405,7 +420,7 @@ def main():
         'num_epochs': 10,
         'updates_per_epoch': 100,
         'optimizer': meta_opt_opt,
-        'optimizer_steps': 200,
+        'optimizer_steps': 100,
         'truncated_bptt_step': 20,
         'device': device,
         'config_forward': config_forward
@@ -414,73 +429,72 @@ def main():
 
     meta_optimizer = train_meta_optimizer(**train_meta_optimizer_config)
     
-
-    
     if opt.use_cuda_graph:
         # transformer = torch.compile(model)
         loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
         static_tensors = build_graph(transformer,optimizer,loss_fn,opt.batch_size,opt.max_length,device)
     
-    # for epoch in range(epochs):
-    #     start = time.time()
+    for epoch in range(epochs):
+        start = time.time()
 
-    #     if opt.use_cuda_graph:
-    #         train_loss, train_accu, train_slot_accu = run_graph(training_data,*static_tensors)
-    #     else:
-    #         train_loss, train_accu, train_slot_accu = train_epoch_bylayer(transformer, training_data, optimizer,device=device,step=epoch,config_forward=config_forward)
+        if opt.use_cuda_graph:
+            train_loss, train_accu, train_slot_accu = run_graph(training_data,*static_tensors)
+        else:
+            # train_loss, train_accu, train_slot_accu = train_epoch_bylayer(transformer, training_data, optimizer,device=device,step=epoch,config_forward=config_forward)
+            train_loss, train_accu, train_slot_accu = meta_train_epoch_bylayer(transformer, training_data, meta_optimizer,device=device,step=epoch,config_forward=config_forward)
 
-    #     # train_loss, train_accu = 0,0
+        # train_loss, train_accu = 0,0
 
-    #     start_val = time.time()
+        start_val = time.time()
 
-    #     valid_loss, valid_accu, valid_slot_accu = eval_epoch(transformer, validation_data, device,config_forward=config_forward)
+        valid_loss, valid_accu, valid_slot_accu = eval_epoch(transformer, validation_data, device,config_forward=config_forward)
 
-    #     test_loss, test_accu, test_slot_accu = eval_epoch(transformer, test_data, device,config_forward=config_forward)
+        test_loss, test_accu, test_slot_accu = eval_epoch(transformer, test_data, device,config_forward=config_forward)
 
-    #     train_result += [train_loss.cpu().to(torch.float32),train_accu.cpu().to(torch.float32),train_slot_accu.cpu().to(torch.float32)]
-    #     test_result += [test_loss,test_accu.cpu().to(torch.float32),test_slot_accu]
-
-
-    #     end = time.time()
+        train_result += [train_loss.cpu().to(torch.float32),train_accu.cpu().to(torch.float32),train_slot_accu.cpu().to(torch.float32)]
+        test_result += [test_loss,test_accu.cpu().to(torch.float32),test_slot_accu]
 
 
+        end = time.time()
 
-    #     train_loss_new = 0
+
+
+        train_loss_new = 0
         
-    #     print('')
-    #     print('epoch = ', epoch)
+        print('')
+        print('epoch = ', epoch)
         
-    #     print('  - (Training)   loss: {loss: 8.5f}, loss_hard: {loss_new: 8.5f}, accuracy: {accu:3.3f} %, slot accuracy: {slot_accu:3.3f},'\
-    #         'elapse: {elapse:3.3f} min'.format(
-    #             loss=train_loss, loss_new=train_loss_new, accu=100*train_accu, slot_accu = 100*train_slot_accu,
-    #             elapse=(start_val-start)/60))
+        print('  - (Training)   loss: {loss: 8.5f}, loss_hard: {loss_new: 8.5f}, accuracy: {accu:3.3f} %, slot accuracy: {slot_accu:3.3f},'\
+            'elapse: {elapse:3.3f} min'.format(
+                loss=train_loss, loss_new=train_loss_new, accu=100*train_accu, slot_accu = 100*train_slot_accu,
+                elapse=(start_val-start)/60))
        
         
-    #     print('  - (Validation) loss: {loss: 8.5f}, accuracy: {accu:3.3f} %, slot accuracy: {slot_accu:3.3f},'\
-    #             'elapse: {elapse:3.3f} min'.format(
-    #                 loss=valid_loss, accu=100*valid_accu,slot_accu = 100*valid_slot_accu,
-    #                 elapse=(end-start_val)/60))
+        print('  - (Validation) loss: {loss: 8.5f}, accuracy: {accu:3.3f} %, slot accuracy: {slot_accu:3.3f},'\
+                'elapse: {elapse:3.3f} min'.format(
+                    loss=valid_loss, accu=100*valid_accu,slot_accu = 100*valid_slot_accu,
+                    elapse=(end-start_val)/60))
 
-    #     print('  - (Test) loss: {loss: 8.5f}, accuracy: {accu:3.3f} %, slot accuracy: {slot_accu:3.3f},'\
-    #             'elapse: {elapse:3.3f} min'.format(
-    #                 loss=test_loss, accu=100*test_accu,slot_accu = 100*test_slot_accu,
-    #                 elapse=(end-start_val)/60))
+        print('  - (Test) loss: {loss: 8.5f}, accuracy: {accu:3.3f} %, slot accuracy: {slot_accu:3.3f},'\
+                'elapse: {elapse:3.3f} min'.format(
+                    loss=test_loss, accu=100*test_accu,slot_accu = 100*test_slot_accu,
+                    elapse=(end-start_val)/60))
         
-    #     full_model_name = opt.save_model + '.chkpt'
-    #     torch.save(transformer.state_dict(),full_model_name)
+        full_model_name = opt.save_model + '.chkpt'
+        torch.save(transformer.state_dict(),full_model_name)
 
-    #     if max(valid_acc_all)<valid_accu:
-    #         best_model_name = opt.save_model + '_best' + '.chkpt'
-    #         torch.save(transformer.state_dict(),best_model_name)
-    #     valid_acc_all.append(valid_accu)
-    # PATH_np = opt.save_model + '.npy'
-    # np.save(PATH_np,np.array([train_result,test_result]))
+        if max(valid_acc_all)<valid_accu:
+            best_model_name = opt.save_model + '_best' + '.chkpt'
+            torch.save(transformer.state_dict(),best_model_name)
+        valid_acc_all.append(valid_accu)
+    PATH_np = opt.save_model + '.npy'
+    np.save(PATH_np,np.array([train_result,test_result]))
 
 
 def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_epoch, optimizer, optimizer_steps, truncated_bptt_step, device='cuda', config_forward=None):
     ''' Trains a meta optimizer on a given model '''
 
-
+    print(meta_optimizer)
     # setup meta_optimizer in main
 
     Loss = nn.CrossEntropyLoss(label_smoothing=0.1)
@@ -492,6 +506,7 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
 
             # Sample a new model
             optimizee = sample_model().to(device)
+
             target, w1, slot_label,attn,seg = map(lambda x: Variable(x.to(device)), next(train_iter))
 
             pred,pred_slot = optimizee(w1,mask=attn,seg=seg,config_forward=config_forward)
@@ -556,7 +571,63 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
     
     return meta_optimizer
 
+def meta_train_epoch_bylayer(model, training_data, meta_optimizer: nn.Module, device='cuda',step=1, config_forward=None):
+    total_loss = 0
+    n_word_total = 0
+    n_word_correct = 0
 
+    cos_total = 0
+    attn_total = 0
+
+    slot_total = 0
+    slot_correct = 0
+
+    count = 0
+
+    meta_optimizer.reset_state(keep_states=False, model=model)
+    meta_optimizer.eval()
+
+    
+    Loss = nn.CrossEntropyLoss(label_smoothing=0.1)
+    for batch in tqdm(
+            training_data, mininterval=2,
+            desc='  - (Training)   ', leave=False):
+
+        target, w1, slot_label,attn,seg= map(lambda x: x.to(device), batch)
+
+
+        model.zero_grad()
+
+
+        pred,pred_slot = model(w1,mask=attn,seg=seg,config_forward=config_forward)
+        pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
+        slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)            
+
+
+        loss_MLM =  Loss(pred_slot, slot_label)
+        loss = Loss(pred,target)  + loss_MLM
+
+        if type(meta_optimizer) == FOOptimizer:
+            loss.backward()
+            meta_model = meta_optimizer.meta_update(model)
+
+
+        # note keeping
+        total_loss += loss.detach()*pred.shape[0]
+        n_word_total += pred.shape[0]
+        n_word_correct += torch.sum(torch.argmax(pred.detach(),dim=1)==target)
+
+        slot_total += torch.sum(slot_label>=0).detach()
+        slot_correct += torch.sum((torch.argmax(pred_slot.detach(),dim=-1)==slot_label)*(slot_label>=0)).detach()
+
+        count += 1
+        
+
+    loss_per_word = total_loss/n_word_total
+    accuracy = n_word_correct/n_word_total
+    accuracy_slot = slot_correct/slot_total
+
+    return loss_per_word, accuracy, accuracy_slot
 
 def train_epoch_bylayer(model, training_data, optimizer,device='cuda',step=1,config_forward=None):
     ''' Epoch operation in training phase'''
