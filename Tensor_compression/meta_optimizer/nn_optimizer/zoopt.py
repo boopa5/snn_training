@@ -6,6 +6,7 @@ import numpy as np
 import os
 
 from meta_optimizer.nn_optimizer import NNOptimizer
+from meta_optimizer.optimizee import Optimizee
 
 # ZO optimizer (UpdateRNN only)
 class ZOOptimizer(NNOptimizer):
@@ -74,7 +75,7 @@ class ZOOptimizer(NNOptimizer):
         return o1.squeeze()
 
 
-    def meta_update(self, model, model_input, loss_fn):
+    def meta_update(self, optimizee: Optimizee, model_input, loss_fn):
         '''Update model using gradient from model '''
         flat_params = self.meta_model.get_flat_params()
 
@@ -83,7 +84,7 @@ class ZOOptimizer(NNOptimizer):
         flat_grads = torch.zeros_like(self.meta_model.get_flat_params())
         for _ in range(self.q):
             u = torch.randn_like(self.meta_model.get_flat_params())  # sampled query direction
-            flat_grads += self.GradientEstimate(model, model_input, loss_fn, u) * u
+            flat_grads += self.GradientEstimate(optimizee, model_input, loss_fn, u, mu=0.001) * u
         flat_grads /= self.q
 
         flat_grads = [flat_grads * mask for mask in self.param_masks]
@@ -94,6 +95,6 @@ class ZOOptimizer(NNOptimizer):
         flat_params = flat_params + torch.sum(torch.stack(deltas), 0)
 
         self.meta_model.set_flat_params(flat_params)
-        self.meta_model.copy_params_to(model)
+        self.meta_model.copy_params_to(optimizee)
 
         return self.meta_model.model

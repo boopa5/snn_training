@@ -9,10 +9,10 @@ from itertools import product
 
 
 class Optimizee(nn.Module):
-    def __init__(self, model, loss_fn):
+    def __init__(self, model    ):
         super(Optimizee, self).__init__()
         self.model = model
-        self.loss_fn = loss_fn
+        # self.loss_fn = loss_fn
 
 
     def get_flat_params(self):

@@ -15,10 +15,10 @@ from torch.utils.data import Dataset
 import numpy as np
 import sklearn.metrics
 
-from tensor_layers.tensor_layers.layers import TensorizedEmbedding, TensorizedLinear_module
-# from tensor_layers.layers import TensorizedEmbedding, TensorizedLinear_module
+# from tensor_layers.tensor_layers.layers import TensorizedEmbedding, TensorizedLinear_module
+from tensor_layers.layers import TensorizedEmbedding, TensorizedLinear_module
 
-from meta_optimizer.optimizee import MetaModel
+from meta_optimizer.optimizee import Optimizee, MetaModel
 from meta_optimizer.nn_optimizer.foopt import FOOptimizer
 from meta_optimizer.nn_optimizer.zoopt import ZOOptimizer
 
@@ -187,11 +187,11 @@ device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cp
 
 #Prepare model
 
-# from tensor_layers.utils import config_class
-# from tensor_layers.Transformer_tensor import Transformer_classification,Transformer_classification_SLU
+from tensor_layers.utils import config_class
+from tensor_layers.Transformer_tensor import Transformer_classification,Transformer_classification_SLU
 
-from tensor_layers.tensor_layers.utils import config_class
-from tensor_layers.tensor_layers.Transformer_tensor import Transformer_classification,Transformer_classification_SLU
+# from tensor_layers.tensor_layers.utils import config_class
+# from tensor_layers.tensor_layers.Transformer_tensor import Transformer_classification,Transformer_classification_SLU
 
 
 # transformer config
@@ -399,7 +399,7 @@ def main():
     train_result = []
     test_result = []
 
-    optimizee = sample_model().to(device)
+    meta_model = MetaModel(sample_model().to(device))
 
     # for name, module in optimizee.named_parameters():
     #     print(name)
@@ -415,7 +415,7 @@ def main():
         # print("-"*50)
 
     meta_optimizer_config = {
-        'model': MetaModel(optimizee),
+        'model': meta_model,
         'num_layers': 2,
         'hidden_size': 10,
         'device': device,
@@ -519,11 +519,11 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
         for i in range(updates_per_epoch):
 
             # Sample a new model
-            optimizee = sample_model().to(device)
+            optimizee = Optimizee(sample_model().to(device))
 
             target, w1, slot_label,attn,seg = map(lambda x: Variable(x.to(device)), next(train_iter))
 
-            pred,pred_slot = optimizee(w1,mask=attn,seg=seg,config_forward=config_forward)
+            pred,pred_slot = optimizee.model(w1,mask=attn,seg=seg,config_forward=config_forward)
             pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
             slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
 
@@ -549,7 +549,7 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
                     # Perform a meta update using gradients from model
                     # and return the current meta model saved in the optimizer
                     if type(meta_optimizer) == FOOptimizer:
-                        pred,pred_slot = optimizee(**optimizee_input)
+                        pred,pred_slot = optimizee.model(**optimizee_input)
                         pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
                         slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
                         loss_MLM =  Loss(pred_slot, slot_label)
@@ -561,13 +561,13 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
                         meta_model = meta_optimizer.meta_update(optimizee)
 
                     elif type(meta_optimizer) == ZOOptimizer:
-                        loss_fn = lambda pred, pred_slot: Loss(pred_slot, slot_label) + Loss(pred, target)
+                        loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), torch.flatten(slot_label,start_dim=0, end_dim=1)) + Loss(pred, target)
                         meta_model = meta_optimizer.meta_update(optimizee, optimizee_input, loss_fn)
 
                     # Compute a loss for a step the meta optimizer
                     pred, pred_slot = meta_model(w1,mask=attn,seg=seg,config_forward=config_forward)
                     pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
-
+                    slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
                     loss_MLM = Loss(pred_slot, slot_label)
                     loss = Loss(pred,target)  + loss_MLM
                     loss_sum += (loss - Variable(prev_loss))
@@ -585,7 +585,7 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
                 decrease_in_loss += loss.item() / initial_loss.item()
                 final_loss += loss.item()
             
-            valid_loss, valid_accu, valid_slot_accu = eval_epoch(optimizee, validation_data, device,config_forward=config_forward)
+            valid_loss, valid_accu, valid_slot_accu = eval_epoch(optimizee.model, validation_data, device,config_forward=config_forward)
             print('  - (Validation) loss: {loss: 8.5f}, accuracy: {accu:3.3f} %, slot accuracy: {slot_accu:3.3f},'.format(
                     loss=valid_loss, accu=100*valid_accu,slot_accu = 100*valid_slot_accu))
 
