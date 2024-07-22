@@ -30,7 +30,7 @@ class NNOptimizer(nn.Module):
 
         grads = (loss2 - loss1) / mu
         if not self.training:
-            grads.detach_()
+            grads.detach()
         optimizee.set_flat_params(model_params)
         return grads
 

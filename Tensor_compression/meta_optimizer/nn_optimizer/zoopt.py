@@ -11,7 +11,7 @@ from meta_optimizer.optimizee import Optimizee
 # ZO optimizer (UpdateRNN only)
 class ZOOptimizer(NNOptimizer):
 
-    def __init__(self, model, args=None, num_layers=1, input_dim=1, hidden_size=10, partition_func=lambda _:0, q=1, device='cuda'):
+    def __init__(self, model, args=None, num_layers=1, input_dim=1, hidden_size=10, partition_func=lambda _:0, q=5, mu=0.000001, device='cuda'):
         super(ZOOptimizer, self).__init__(model, args)
 
         self.param_LSTM_map = {name: partition_func(name) for name, _ in self.meta_model.model.named_parameters()}
@@ -29,6 +29,7 @@ class ZOOptimizer(NNOptimizer):
         self.input_dim = input_dim
 
         self.q = q
+        self.mu = mu
 
         self.device = device
 
@@ -84,7 +85,7 @@ class ZOOptimizer(NNOptimizer):
         flat_grads = torch.zeros_like(self.meta_model.get_flat_params())
         for _ in range(self.q):
             u = torch.randn_like(self.meta_model.get_flat_params())  # sampled query direction
-            flat_grads += self.GradientEstimate(optimizee, model_input, loss_fn, u, mu=0.001) * u
+            flat_grads += self.GradientEstimate(optimizee, model_input, loss_fn, u, self.mu) * u
         flat_grads /= self.q
 
         flat_grads = [flat_grads * mask for mask in self.param_masks]
@@ -95,6 +96,6 @@ class ZOOptimizer(NNOptimizer):
         flat_params = flat_params + torch.sum(torch.stack(deltas), 0)
 
         self.meta_model.set_flat_params(flat_params)
-        self.meta_model.copy_params_to(optimizee)
+        self.meta_model.copy_params_to(optimizee.model)
 
         return self.meta_model.model

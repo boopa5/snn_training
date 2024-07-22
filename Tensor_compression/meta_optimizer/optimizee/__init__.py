@@ -9,7 +9,7 @@ from itertools import product
 
 
 class Optimizee(nn.Module):
-    def __init__(self, model    ):
+    def __init__(self, model):
         super(Optimizee, self).__init__()
         self.model = model
         # self.loss_fn = loss_fn
