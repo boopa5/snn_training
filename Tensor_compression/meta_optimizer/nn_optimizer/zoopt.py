@@ -40,7 +40,7 @@ class ZOOptimizer(NNOptimizer):
             idx = self.param_LSTM_map[name]
             for i in range(self.num_lstms):
                 masks[i].append(torch.zeros_like(p).view(-1))
-                masks[idx][-1] = torch.ones_like(p).view(-1)
+            masks[idx][-1] = torch.ones_like(p).view(-1)
 
         masks = [torch.cat(mask) for mask in masks]
         return masks

@@ -15,7 +15,7 @@ class NNOptimizer(nn.Module):
     def meta_update(self, *input):
         raise NotImplementedError
 
-    def GradientEstimate(self, optimizee, model_inputs, loss_fn, direction, mu=0.000001):
+    def GradientEstimate(self, optimizee, model_inputs, loss_fn, direction, mu=0.00001):
         model_params = optimizee.get_flat_params()
         updated_model_params = model_params + mu * direction
 
@@ -31,6 +31,7 @@ class NNOptimizer(nn.Module):
         grads = (loss2 - loss1) / mu
         if not self.training:
             grads.detach()
+            
         optimizee.set_flat_params(model_params)
         return grads
 
