@@ -80,19 +80,20 @@ class ZOOptimizer(NNOptimizer):
 
     def meta_update(self, optimizee: Optimizee, model_input, loss_fn):
         '''Update model using gradient from model '''
-        flat_params = optimizee.get_flat_params()
+        with torch.no_grad():
+            flat_params = optimizee.get_flat_params()
 
-        self.step += 1
+            self.step += 1
 
-        flat_grads = torch.zeros_like(self.meta_model.get_flat_params())
-        for _ in range(self.q):
-            u = torch.randn_like(self.meta_model.get_flat_params())  # sampled query direction
-            flat_grads += self.GradientEstimate(optimizee, model_input, loss_fn, u, self.mu) * u
-        flat_grads /= self.q
+            flat_grads = torch.zeros_like(self.meta_model.get_flat_params())
+            for _ in range(self.q):
+                u = torch.randn_like(self.meta_model.get_flat_params())  # sampled query direction
+                flat_grads += self.GradientEstimate(optimizee, model_input, loss_fn, u, self.mu) * u
+            flat_grads /= self.q
 
-        flat_grads = [flat_grads * mask for mask in self.param_masks]
+            flat_grads = [flat_grads * mask for mask in self.param_masks]
 
-        inputs = [Variable(flat_grad.view(-1, 1).unsqueeze(1)) for flat_grad in flat_grads]
+            inputs = [Variable(flat_grad.view(-1, 1).unsqueeze(1)) for flat_grad in flat_grads]
 
         deltas = torch.sum(torch.stack([self(x, idx) for idx, x in enumerate(inputs)]), 0)
         # print(torch.norm(deltas))

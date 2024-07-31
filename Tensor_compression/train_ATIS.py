@@ -587,23 +587,23 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
                         meta_model = meta_optimizer.meta_update(optimizee)
 
                     elif type(meta_optimizer) == ZOOptimizer:
-                        with torch.no_grad():
-                            meta_model = meta_optimizer.meta_update(optimizee, optimizee_input, loss_fn)
+                        # with torch.no_grad():
+                        meta_model = meta_optimizer.meta_update(optimizee, optimizee_input, loss_fn)
 
                     # Compute a loss for a step the meta optimizer
                     with torch.no_grad():
                         pred, pred_slot = meta_model.model(**optimizee_input)
                         pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
-                        # slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
+                    # slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
                         loss_MLM = Loss(pred_slot, slot_label)
                         loss = Loss(pred,target)  + loss_MLM
-                        loss.detach()
+                        # loss.detach()
 
-                        meta_optimizer.populate_ZO_grads(meta_model, optimizee_input, loss_fn)
+                    meta_optimizer.populate_ZO_grads(meta_model, optimizee_input, loss_fn)
 
+                    
                     loss_sum += loss
-                    # print(loss_sum)
-                    print(loss.item())
+                    # print(loss.item())
                     loss_sum.backward()
                     # loss_sum += (loss - Variable(prev_loss))
                     # loss_sum += (k * truncated_bptt_step + j) * (loss - Variable(prev_loss))
