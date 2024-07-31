@@ -399,7 +399,7 @@ class TensorizedLinear_module(nn.Module):
         # output = quant_out(output)
 
         output = torch.flatten(output, start_dim = N-1, end_dim = -1)
-        output = torch.squeeze(output)
+        output = torch.squeeze(output, dim=0)
 
 
         return output
@@ -441,7 +441,7 @@ class TensorizedLinear_module(nn.Module):
         output = torch.tensordot(out,output,[[-1],[0]])
 
         output = torch.flatten(output, start_dim = N-1, end_dim = -1)
-        output = torch.squeeze(output)
+        output = torch.squeeze(output, dim=0)
 
 
         return output

@@ -8,13 +8,13 @@ from torch.autograd import Variable, Function
 from itertools import product
 
 
-class Optimizee(nn.Module):
+class Optimizee():
     def __init__(self, model):
         super(Optimizee, self).__init__()
         self.model = model
         # self.loss_fn = loss_fn
 
-
+    
     def get_flat_params(self):
         return torch.nn.utils.parameters_to_vector(self.model.parameters())
 
@@ -71,6 +71,5 @@ class MetaModel:
         for modelA, modelB in zip(self.model.parameters(), model.parameters()):
             modelB.data.copy_(modelA.data)
 
-
-
+    
 # from . import mnist

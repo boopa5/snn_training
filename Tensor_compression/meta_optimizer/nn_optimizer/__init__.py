@@ -9,6 +9,11 @@ class NNOptimizer(nn.Module):
         super(NNOptimizer, self).__init__()
         self.meta_model = model
 
+
+    def set_meta_model(self, model):
+        self.meta_model = model
+
+
     def reset_state(self):
         raise NotImplementedError
 
@@ -29,11 +34,13 @@ class NNOptimizer(nn.Module):
         loss2 = loss_fn(*f_x2)
 
         grads = (loss2 - loss1) / mu
+
         if not self.training:
             grads.detach()
-            
+        
         optimizee.set_flat_params(model_params)
         return grads
+    
 
     def save(self, epoch, outdir, best=False):
         if not best:

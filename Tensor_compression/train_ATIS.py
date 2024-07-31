@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import argparse
 import time
+import itertools
 
 from tqdm import tqdm
 import torch
@@ -295,7 +296,7 @@ def sample_model():
     classification_rank = 20
 
 
-    config_model =config_class(**D)
+    config_model = config_class(**D)
 
     config_model.pff[0] = config_class(shape=pff_shape[0],ranks=pff_rank[0],set_scale_factors=set_scale_factors)
     config_model.pff[1] = config_class(shape=pff_shape[1],ranks=pff_rank[1],set_scale_factors=set_scale_factors)
@@ -417,13 +418,15 @@ def main():
     meta_optimizer_config = {
         'model': meta_model,
         'num_layers': 2,
-        'hidden_size': 10,
+        'hidden_size': 20,
         'device': device,
+        'mu': 1e-2,
+        'q': 16,
         # 'partition_func': lambda p_name: 1 if 'factors' in p_name else 0
     }
 
-    meta_optimizer = FOOptimizer(**meta_optimizer_config).to(device)
-    # meta_optimizer = ZOOptimizer(**meta_optimizer_config).to(device)
+    # meta_optimizer = FOOptimizer(**meta_optimizer_config).to(device)
+    meta_optimizer = ZOOptimizer(**meta_optimizer_config).to(device)
     meta_opt_opt = optim.Adam(meta_optimizer.parameters())
 
     # train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_epoch, optimizer, optimizer_steps, truncated_bptt_step, device='cuda', config_forward=None):
@@ -431,9 +434,9 @@ def main():
         'meta_optimizer': meta_optimizer,
         'training_data': training_data,
         'num_epochs': 1,
-        'updates_per_epoch': 10,
+        'updates_per_epoch': 5,
         'optimizer': meta_opt_opt,
-        'optimizer_steps': 200,
+        'optimizer_steps': 60,
         'truncated_bptt_step': 20,
         'device': device,
         'config_forward': config_forward
@@ -446,7 +449,10 @@ def main():
         # transformer = torch.compile(model)
         loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
         static_tensors = build_graph(transformer,optimizer,loss_fn,opt.batch_size,opt.max_length,device)
-    transformer = sample_model().to(device)
+
+    meta_model = MetaModel(sample_model().to(device))
+    meta_optimizer.set_meta_model(meta_model)
+    pa = str(transformer.state_dict())
     for epoch in range(epochs):
         start = time.time()
 
@@ -454,8 +460,10 @@ def main():
             train_loss, train_accu, train_slot_accu = run_graph(training_data,*static_tensors)
         else:
             # train_loss, train_accu, train_slot_accu = train_epoch_bylayer(transformer, training_data, optimizer,device=device,step=epoch,config_forward=config_forward)
-            train_loss, train_accu, train_slot_accu = meta_train_epoch_bylayer(transformer, training_data, meta_optimizer,device=device,step=epoch,config_forward=config_forward)
-
+            train_loss, train_accu, train_slot_accu = meta_train_epoch_bylayer(transformer, training_data, meta_optimizer, optimizer_steps=1, device=device,step=epoch,config_forward=config_forward)
+        pb = str(transformer.state_dict())
+        print(pa==pb)
+        pa = pb
         # train_loss, train_accu = 0,0
 
         start_val = time.time()
@@ -507,38 +515,55 @@ def main():
 def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_epoch, optimizer, optimizer_steps, truncated_bptt_step, device='cuda', config_forward=None):
     ''' Trains a meta optimizer on a given model '''
 
-    training_data = iter(cycle(training_data))
-    
+    train_iter = itertools.cycle(training_data)
     # setup meta_optimizer in main
     Loss = nn.CrossEntropyLoss(label_smoothing=0.1)
     for epoch in range(num_epochs):
         decrease_in_loss = 0.0
         final_loss = 0.0
-        train_iter = iter(training_data)
         for i in range(updates_per_epoch):
 
             # Sample a new model
             optimizee = Optimizee(sample_model().to(device))
 
             target, w1, slot_label,attn,seg = map(lambda x: Variable(x.to(device)), next(train_iter))
-            loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), slot_label) + Loss(pred, target)
+            slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
 
             pred,pred_slot = optimizee.model(w1,mask=attn,seg=seg,config_forward=config_forward)
             pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
-            slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
+            loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), slot_label) + Loss(pred, target)
+            optimizee_input = {
+                'input': w1,
+                'mask': attn,
+                'seg': seg,
+                'config_forward': config_forward
+            }
 
             loss_MLM =  Loss(pred_slot, slot_label)
             initial_loss = Loss(pred,target)  + loss_MLM
-
+ 
             for k in tqdm(range(optimizer_steps // truncated_bptt_step)):
                 # TBPTT
-                meta_optimizer.reset_state(keep_states=k>0, model=optimizee)
+                meta_optimizer.reset_state(keep_states=k>0, model=optimizee.model)
                 loss_sum = 0
                 prev_loss = torch.zeros(1).to(device)
 
+                # target, w1, slot_label,attn,seg = map(lambda x: Variable(x.to(device)), next(train_iter))
+                # slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
+                # loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), slot_label) + Loss(pred, target)
+                # optimizee_input = {
+                #     'input': w1,
+                #     'mask': attn,
+                #     'seg': seg,
+                #     'config_forward': config_forward
+                # }
+
                 for j in range(truncated_bptt_step):
-                    # target, w1, slot_label,attn,seg = map(lambda x: Variable(x.to(device)), next(train_iter))
-                    # slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
+                    target, w1, slot_label,attn,seg = map(lambda x: Variable(x.to(device)), next(train_iter))
+                    slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
+
+                    loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), slot_label) + Loss(pred, target)
+                    # loss_fn = lambda pred, pred_slot: 0
 
                     optimizee_input = {
                         'input': w1,
@@ -562,25 +587,39 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
                         meta_model = meta_optimizer.meta_update(optimizee)
 
                     elif type(meta_optimizer) == ZOOptimizer:
-                        meta_model = meta_optimizer.meta_update(optimizee, optimizee_input, loss_fn)
+                        with torch.no_grad():
+                            meta_model = meta_optimizer.meta_update(optimizee, optimizee_input, loss_fn)
 
                     # Compute a loss for a step the meta optimizer
-                    pred, pred_slot = meta_model(w1,mask=attn,seg=seg,config_forward=config_forward)
-                    pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
-                    # slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
-                    loss_MLM = Loss(pred_slot, slot_label)
-                    loss = Loss(pred,target)  + loss_MLM
+                    with torch.no_grad():
+                        pred, pred_slot = meta_model.model(**optimizee_input)
+                        pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
+                        # slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
+                        loss_MLM = Loss(pred_slot, slot_label)
+                        loss = Loss(pred,target)  + loss_MLM
+                        loss.detach()
+
+                        meta_optimizer.populate_ZO_grads(meta_model, optimizee_input, loss_fn)
+
+                    loss_sum += loss
+                    # print(loss_sum)
+                    print(loss.item())
+                    loss_sum.backward()
                     # loss_sum += (loss - Variable(prev_loss))
-                    loss_sum += (k * truncated_bptt_step + j) * (loss - Variable(prev_loss))
+                    # loss_sum += (k * truncated_bptt_step + j) * (loss - Variable(prev_loss))
+                    # loss_sum += (k * truncated_bptt_step + j) * loss
 
                     
                     prev_loss = loss.data
 
 
                 meta_optimizer.zero_grad()
+                print("backwarding")
                 loss_sum.backward()
+                print("backwarded")
                 for param in meta_optimizer.parameters():
                     param.grad.data.clamp_(-1, 1)
+
                 optimizer.step()
 
                 # decrease_in_loss += loss.data[0] / initial_loss.data[0]
@@ -598,7 +637,8 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
     
     return meta_optimizer
 
-def meta_train_epoch_bylayer(model, training_data, meta_optimizer, device='cuda',step=1, config_forward=None):
+def meta_train_epoch_bylayer(model, training_data, meta_optimizer, optimizer_steps, device='cuda',step=1, config_forward=None):
+    model.train()
     total_loss = 0
     n_word_total = 0
     n_word_correct = 0
@@ -612,14 +652,14 @@ def meta_train_epoch_bylayer(model, training_data, meta_optimizer, device='cuda'
     count = 0
 
     optimizee = Optimizee(model)
-    meta_optimizer.reset_state(keep_states=False, model=optimizee.model)
     meta_optimizer.eval()
 
     
     Loss = nn.CrossEntropyLoss(label_smoothing=0.1)
-    for batch in tqdm(
+    loader = tqdm(
             training_data, mininterval=2,
-            desc='  - (Training)   ', leave=False):
+            desc='  - (Training)   ', leave=False)
+    for batch in loader:
 
         target, w1, slot_label,attn,seg= map(lambda x: x.to(device), batch)
         slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
@@ -630,13 +670,17 @@ def meta_train_epoch_bylayer(model, training_data, meta_optimizer, device='cuda'
             'config_forward': config_forward
         }
 
+        loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), slot_label) + Loss(pred, target)
+        # loss_fn = lambda pred, pred_slot: Loss(pred, target) * 0
+
         optimizee.model.zero_grad()
         pred,pred_slot = optimizee.model(**optimizee_input)
         pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
 
         loss_MLM =  Loss(pred_slot, slot_label)
         loss = Loss(pred,target)  + loss_MLM
-  
+
+        meta_optimizer.reset_state(keep_states=True, model=optimizee.model)
 
         if type(meta_optimizer) == FOOptimizer:
 
@@ -645,8 +689,8 @@ def meta_train_epoch_bylayer(model, training_data, meta_optimizer, device='cuda'
                 meta_model = meta_optimizer.meta_update(optimizee)
 
         elif type(meta_optimizer) == ZOOptimizer:
-            loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), slot_label) + Loss(pred, target)
             with torch.no_grad():
+                # pass
                 meta_model = meta_optimizer.meta_update(optimizee, optimizee_input, loss_fn)
 
         # note keeping
@@ -665,6 +709,76 @@ def meta_train_epoch_bylayer(model, training_data, meta_optimizer, device='cuda'
     accuracy_slot = slot_correct/slot_total
 
     return loss_per_word, accuracy, accuracy_slot
+
+# def meta_train_epoch_bylayer(model, training_data, meta_optimizer, optimizer_steps, device='cuda',step=1, config_forward=None):
+#     total_loss = 0
+#     n_word_total = 0
+#     n_word_correct = 0
+
+#     cos_total = 0
+#     attn_total = 0
+
+#     slot_total = 0
+#     slot_correct = 0
+
+#     count = 0
+
+#     optimizee = Optimizee(model)
+#     meta_optimizer.eval()
+
+    
+#     Loss = nn.CrossEntropyLoss(label_smoothing=0.1)
+#     for batch in tqdm(
+#             training_data, mininterval=2,
+#             desc='  - (Training)   ', leave=False):
+
+#         target, w1, slot_label,attn,seg= map(lambda x: x.to(device), batch)
+#         slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
+#         optimizee_input = {
+#             'input': w1,
+#             'mask': attn,
+#             'seg': seg,
+#             'config_forward': config_forward
+#         }
+
+#         loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), slot_label) + Loss(pred, target)
+
+#         optimizee.model.zero_grad()
+#         pred,pred_slot = optimizee.model(**optimizee_input)
+#         pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
+
+#         loss_MLM =  Loss(pred_slot, slot_label)
+#         loss = Loss(pred,target)  + loss_MLM
+
+#         meta_optimizer.reset_state(keep_states=False, model=optimizee.model)
+#         if type(meta_optimizer) == FOOptimizer:
+
+#             loss.backward()
+#             with torch.no_grad():
+#                 for i in range(optimizer_steps):
+#                     meta_model = meta_optimizer.meta_update(optimizee)
+
+#         elif type(meta_optimizer) == ZOOptimizer:
+#             with torch.no_grad():
+#                 for i in range(optimizer_steps):
+#                     meta_model = meta_optimizer.meta_update(optimizee, optimizee_input, loss_fn)
+
+#         # note keeping
+#         total_loss += loss.detach()*pred.shape[0]
+#         n_word_total += pred.shape[0]
+#         n_word_correct += torch.sum(torch.argmax(pred.detach(),dim=1)==target)
+
+#         slot_total += torch.sum(slot_label>=0).detach()
+#         slot_correct += torch.sum((torch.argmax(pred_slot.detach(),dim=-1)==slot_label)*(slot_label>=0)).detach()
+
+#         count += 1
+        
+
+#     loss_per_word = total_loss/n_word_total
+#     accuracy = n_word_correct/n_word_total
+#     accuracy_slot = slot_correct/slot_total
+
+#     return loss_per_word, accuracy, accuracy_slot
 
 def train_epoch_bylayer(model, training_data, optimizer,device='cuda',step=1,config_forward=None):
     ''' Epoch operation in training phase'''

@@ -6,7 +6,6 @@ import numpy as np
 import os
 
 from meta_optimizer.nn_optimizer import NNOptimizer
-from meta_optimizer.optimizee import Optimizee, MetaModel
 
 # ZO optimizer (UpdateRNN only)
 class FOOptimizer(NNOptimizer):
@@ -76,7 +75,7 @@ class FOOptimizer(NNOptimizer):
         return o1.squeeze()
 
 
-    def meta_update(self, optimizee: Optimizee):        
+    def meta_update(self, model):        
         '''Update model using gradient from model '''
         flat_params = self.meta_model.get_flat_params()
 
@@ -94,14 +93,13 @@ class FOOptimizer(NNOptimizer):
         # deltas = [self(x, idx) for idx, x in enumerate(inputs)]
 
         flat_grads = []
-        for name, p in optimizee.model.named_parameters():
+        for name, p in model.named_parameters():
             if p.grad is not None:
                 flat_grads.append(p.grad.view(-1))
-            else: 
+            else:
                 flat_grads.append(torch.zeros_like(p).view(-1))
 
-        # for mask in self.param_masks:
-        #     print(mask)
+
         flat_grads = [torch.cat(flat_grads) * mask for mask in self.param_masks]
 
         inputs = [Variable(flat_grad.view(-1, 1).unsqueeze(1)) for flat_grad in flat_grads]
@@ -111,7 +109,7 @@ class FOOptimizer(NNOptimizer):
         flat_params = flat_params + torch.sum(torch.stack(deltas), 0)
 
         self.meta_model.set_flat_params(flat_params)
-        self.meta_model.copy_params_to(optimizee.model)
+        self.meta_model.copy_params_to(model)
 
         return self.meta_model.model
 
