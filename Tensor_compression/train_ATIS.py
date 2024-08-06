@@ -1,3 +1,5 @@
+from functools import reduce
+from operator import mul
 import torch
 import torch.nn as nn
 import argparse
@@ -5,6 +7,9 @@ import time
 import itertools
 
 from tqdm import tqdm
+from matplotlib import pyplot as plt
+from torchviz import make_dot
+
 import torch
 import torch.optim as optim
 import torch.utils.data
@@ -16,7 +21,7 @@ from torch.utils.data import Dataset
 import numpy as np
 import sklearn.metrics
 
-# from tensor_layers.tensor_layers.layers import TensorizedEmbedding, TensorizedLinear_module
+from tensor_layers.tensor_layers.layers import TensorizedEmbedding, TensorizedLinear_module
 # from tensor_layers.layers import TensorizedEmbedding, TensorizedLinear_module
 
 from meta_optimizer.optimizee import Optimizee, MetaModel
@@ -39,7 +44,7 @@ opt.use_cuda_graph = (opt.use_cuda_graph==1)
 
 
 torch.manual_seed(0)
-
+torch.set_warn_always(False)
 
 
 
@@ -179,12 +184,16 @@ validation_data = DataLoader(val_iter, batch_size=opt.batch_size, collate_fn=col
 test_iter = torch.load('./examples/ATIS/data/ATIS_test.pt')
 test_data = DataLoader(test_iter, batch_size=opt.batch_size, collate_fn=collate_fn_custom, shuffle=False)
 
+META_OPT_TRAIN_RATIO = 0.07
+NUM_META_OPT_TRAIN = int(META_OPT_TRAIN_RATIO * len(training_data))
 
-
-
+train_iter_meta_opt = train_iter[:NUM_META_OPT_TRAIN]
+training_data_meta_opt = DataLoader(train_iter_meta_opt, batch_size=opt.batch_size, collate_fn=collate_fn_custom, shuffle=True, drop_last=True)
 
 
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+
 
 #Prepare model
 
@@ -401,7 +410,6 @@ def main():
     test_result = []
 
     meta_model = MetaModel(sample_model().to(device))
-
     # for name, module in optimizee.named_parameters():
     #     print(name)
         # if modules_map[module]
@@ -420,26 +428,27 @@ def main():
         'num_layers': 2,
         'hidden_size': 20,
         'device': device,
-        'mu': 1e-2,
-        'q': 16,
+        'mu': 1e-3,
+        'q': 20,
         # 'partition_func': lambda p_name: 1 if 'factors' in p_name else 0
     }
 
     # meta_optimizer = FOOptimizer(**meta_optimizer_config).to(device)
     meta_optimizer = ZOOptimizer(**meta_optimizer_config).to(device)
-    meta_opt_opt = optim.Adam(meta_optimizer.parameters())
+    meta_opt_opt = optim.Adam(meta_optimizer.parameters(), lr=1e-3)
 
     # train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_epoch, optimizer, optimizer_steps, truncated_bptt_step, device='cuda', config_forward=None):
     train_meta_optimizer_config = {
         'meta_optimizer': meta_optimizer,
-        'training_data': training_data,
-        'num_epochs': 1,
-        'updates_per_epoch': 5,
+        'training_data': training_data_meta_opt,
+        'num_epochs': 10,
+        'updates_per_epoch': 1,
         'optimizer': meta_opt_opt,
-        'optimizer_steps': 60,
+        'optimizer_steps': 50,
         'truncated_bptt_step': 20,
         'device': device,
-        'config_forward': config_forward
+        'config_forward': config_forward,
+        'validation_data': training_data
     }
 
 
@@ -512,26 +521,30 @@ def main():
     np.save(PATH_np,np.array([train_result,test_result]))
 
 
-def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_epoch, optimizer, optimizer_steps, truncated_bptt_step, device='cuda', config_forward=None):
+def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_epoch, optimizer, optimizer_steps, truncated_bptt_step, validation_data, device='cuda', config_forward=None):
     ''' Trains a meta optimizer on a given model '''
 
     train_iter = itertools.cycle(training_data)
     # setup meta_optimizer in main
     Loss = nn.CrossEntropyLoss(label_smoothing=0.1)
-    for epoch in range(num_epochs):
+    for epoch in tqdm(range(num_epochs)):
+        meta_optimizer.train()
         decrease_in_loss = 0.0
         final_loss = 0.0
-        for i in range(updates_per_epoch):
-
+        for i in tqdm(range(updates_per_epoch)):
+        # for datum in train_iter:
             # Sample a new model
             optimizee = Optimizee(sample_model().to(device))
 
-            target, w1, slot_label,attn,seg = map(lambda x: Variable(x.to(device)), next(train_iter))
+            # set require_grad to false for all model params
+            # for param in optimizee.model.parameters():
+            #     param.requires_grad = False
+
+
+            target, w1, slot_label, attn, seg = map(lambda x: Variable(x.to(device)), next(train_iter))
+            # target, w1, slot_label, attn, seg = map(lambda x: Variable(x.to(device)), datum)
             slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
 
-            pred,pred_slot = optimizee.model(w1,mask=attn,seg=seg,config_forward=config_forward)
-            pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
-            loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), slot_label) + Loss(pred, target)
             optimizee_input = {
                 'input': w1,
                 'mask': attn,
@@ -539,31 +552,26 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
                 'config_forward': config_forward
             }
 
-            loss_MLM =  Loss(pred_slot, slot_label)
+            pred,pred_slot = optimizee.model(**optimizee_input)
+            pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
+            loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), slot_label) + Loss(pred, target)
+            
+            loss_MLM =  Loss(pred_slot, slot_label).item()
             initial_loss = Loss(pred,target)  + loss_MLM
  
-            for k in tqdm(range(optimizer_steps // truncated_bptt_step)):
+            for k in range(optimizer_steps // truncated_bptt_step):
                 # TBPTT
+
                 meta_optimizer.reset_state(keep_states=k>0, model=optimizee.model)
+
                 loss_sum = 0
                 prev_loss = torch.zeros(1).to(device)
 
-                # target, w1, slot_label,attn,seg = map(lambda x: Variable(x.to(device)), next(train_iter))
-                # slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
-                # loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), slot_label) + Loss(pred, target)
-                # optimizee_input = {
-                #     'input': w1,
-                #     'mask': attn,
-                #     'seg': seg,
-                #     'config_forward': config_forward
-                # }
-
                 for j in range(truncated_bptt_step):
-                    target, w1, slot_label,attn,seg = map(lambda x: Variable(x.to(device)), next(train_iter))
-                    slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
 
-                    loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), slot_label) + Loss(pred, target)
-                    # loss_fn = lambda pred, pred_slot: 0
+                    target, w1, slot_label, attn, seg = map(lambda x: Variable(x.to(device)), next(train_iter))
+                    # target, w1, slot_label, attn, seg = map(lambda x: Variable(x.to(device)), datum)
+                    slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
 
                     optimizee_input = {
                         'input': w1,
@@ -572,7 +580,11 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
                         'config_forward': config_forward
                     }
 
+                    pred,pred_slot = optimizee.model(**optimizee_input)
+                    pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
+                    loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), slot_label) + Loss(pred, target)
 
+                    loss = None
                     # Perform a meta update using gradients from model
                     # and return the current meta model saved in the optimizer
                     if type(meta_optimizer) == FOOptimizer:
@@ -588,23 +600,55 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
 
                     elif type(meta_optimizer) == ZOOptimizer:
                         # with torch.no_grad():
-                        meta_model = meta_optimizer.meta_update(optimizee, optimizee_input, loss_fn)
+                        
+                        meta_model, loss = meta_optimizer.meta_update(optimizee, optimizee_input, loss_fn)
 
                     # Compute a loss for a step the meta optimizer
-                    with torch.no_grad():
-                        pred, pred_slot = meta_model.model(**optimizee_input)
-                        pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
+                    pred, pred_slot = meta_model.model(**optimizee_input)
+                    pred_slot = torch.flatten(pred_slot,start_dim=0, end_dim=1)
                     # slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
-                        loss_MLM = Loss(pred_slot, slot_label)
-                        loss = Loss(pred,target)  + loss_MLM
-                        # loss.detach()
+                    loss_MLM = Loss(pred_slot, slot_label)
+                    loss = Loss(pred,target)  + loss_MLM
 
-                    meta_optimizer.populate_ZO_grads(meta_model, optimizee_input, loss_fn)
+                    print(loss.item())
+                    # meta_optimizer.populate_ZO_grads(meta_model, optimizee_input, loss_fn)
+                    # loss.backward()
+                    # flat_grads = meta_optimizer.compute_ZO_grads(meta_model, optimizee_input, loss_fn)
+                    # print(flat_grads.shape)
+                    # offset = 0
+                    # for module in meta_model.model.modules():
+                    #     if len(module._parameters) != 0:
+                    #         for key in module._parameters.keys():
+                    #             param_shape = module._parameters[key].size()
+                    #             param_flat_size = reduce(mul, param_shape, 1)
 
+                    #             module._parameters[key].register_hook(lambda grad: flat_grads[
+                    #                                        offset:offset + param_flat_size].view(*param_shape))
+                    #             offset += param_flat_size
                     
+
+                    # loss.backward()
+                    # offset = 0
+                    # for module in meta_model.model.modules():
+                    #     if len(module._parameters) != 0:
+                    #         for key in module._parameters.keys():
+                    #             param_shape = module._parameters[key].size()
+                    #             param_flat_size = reduce(mul, param_shape, 1)
+                    #             # print(module._parameters[key].grad == flat_grads[
+                    #                                     #    offset:offset + param_flat_size].view(*param_shape))
+                    #             print(module._parameters[key].grad)
+                    #             # print(flat_grads[
+                    #                                     #    offset:offset + param_flat_size].view(*param_shape))
+                    #             offset += param_flat_size
                     loss_sum += loss
+
+                    # for param in meta_model.model.parameters():
+                    #     print(param.requires_grad)
+                    
+                    # make_dot(loss, params=dict(meta_model.model.named_parameters()), show_saved=True).view()
+
                     # print(loss.item())
-                    loss_sum.backward()
+                    # loss_sum.backward()
                     # loss_sum += (loss - Variable(prev_loss))
                     # loss_sum += (k * truncated_bptt_step + j) * (loss - Variable(prev_loss))
                     # loss_sum += (k * truncated_bptt_step + j) * loss
@@ -614,9 +658,8 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
 
 
                 meta_optimizer.zero_grad()
-                print("backwarding")
                 loss_sum.backward()
-                print("backwarded")
+
                 for param in meta_optimizer.parameters():
                     param.grad.data.clamp_(-1, 1)
 
@@ -624,16 +667,50 @@ def train_meta_optimizer(meta_optimizer, training_data, num_epochs, updates_per_
 
                 # decrease_in_loss += loss.data[0] / initial_loss.data[0]
                 # final_loss += loss.data[0]
-                decrease_in_loss += loss.item() / initial_loss.item()
-                final_loss += loss.item()
+            decrease_in_loss += loss.item() / initial_loss.item()
+            final_loss += loss.item()
             
-            valid_loss, valid_accu, valid_slot_accu = eval_epoch(optimizee.model, validation_data, device,config_forward=config_forward)
-            print('  - (Validation) loss: {loss: 8.5f}, accuracy: {accu:3.3f} %, slot accuracy: {slot_accu:3.3f},'.format(
-                    loss=valid_loss, accu=100*valid_accu,slot_accu = 100*valid_slot_accu))
+
+        # test meta_opt
+        meta_optimizer.eval()
+        # test_loss_sum = 0.0
+        # test_loss_ratio = 0.0
+        test_iter = 0
+        test_losses = []
+        optimizee = Optimizee(sample_model().to(device))
+        # for param in optimizee.model.parameters():
+        #         param.requires_grad = False
+
+        meta_optimizer.reset_state(keep_states=False, model=optimizee.model)
+
+        for datum in tqdm(validation_data):
+            target, w1, slot_label, attn, seg = map(lambda x: Variable(x.to(device)), datum)
+            optimizee_input = {
+                'input': w1,
+                'mask': attn,
+                'seg': seg,
+                'config_forward': config_forward
+            }
+
+            slot_label = torch.flatten(slot_label,start_dim=0, end_dim=1)
+            loss_fn = lambda pred, pred_slot: Loss(torch.flatten(pred_slot,start_dim=0, end_dim=1), slot_label) + Loss(pred, target)
+
+            with torch.no_grad():
+                _, loss = meta_optimizer.meta_update(optimizee, optimizee_input, loss_fn)
+                test_losses.append(loss.item())
 
 
-            print("Epoch: {}, final loss {}, average final/initial loss ratio: {}".format(epoch, final_loss / updates_per_epoch,
-                                                                       decrease_in_loss / updates_per_epoch))
+
+        
+        plt.plot(test_losses)
+        plt.savefig(f"epoch_{epoch}_test")
+            # valid_loss, valid_accu, valid_slot_accu = eval_epoch(optimizee.model, validation_data, device,config_forward=config_forward)
+            # print('  - (Validation) loss: {loss: 8.5f}, accuracy: {accu:3.3f} %, slot accuracy: {slot_accu:3.3f},'.format(
+            #         loss=valid_loss, accu=100*valid_accu,slot_accu = 100*valid_slot_accu))
+
+
+        print("Epoch: {}, final loss {}, average final/initial loss ratio: {}".format(epoch, final_loss / updates_per_epoch,
+                                                                    decrease_in_loss / updates_per_epoch))
     
     return meta_optimizer
 

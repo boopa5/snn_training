@@ -49,18 +49,20 @@ class ZOOptimizer(NNOptimizer):
 
     def reset_state(self, keep_states=False, model=None):
         device = self.device
-        
+
         self.meta_model.reset()
         self.meta_model.copy_params_from(model)
+
         if keep_states:
             # self.h0 = Variable(self.h0.data).to(device)
             # self.c0 = Variable(self.c0.data).to(device)
             self.h0s = [Variable(h0.data).to(device) for h0 in self.h0s]
             self.c0s = [Variable(c0.data).to(device) for c0 in self.c0s]
+
         else:
             def initialize_rnn_hidden_state(dim_sum, n_layers, n_params):
 
-                h0s = [Variable(torch.zeros(n_layers, n_params, dim_sum), requires_grad=True).to(device) for _ in range(self.num_lstms)]
+                h0s = [torch.zeros(n_layers, n_params, dim_sum, requires_grad=True).to(device) for _ in range(self.num_lstms)]
                 return h0s
 
             self.h0s = initialize_rnn_hidden_state(self.hidden_size, self.num_layers,
@@ -80,56 +82,57 @@ class ZOOptimizer(NNOptimizer):
 
     def meta_update(self, optimizee: Optimizee, model_input, loss_fn):
         '''Update model using gradient from model '''
-        with torch.no_grad():
-            flat_params = optimizee.get_flat_params()
+        # with torch.no_grad():
+        flat_params = optimizee.get_flat_params()
 
-            self.step += 1
+        self.step += 1
 
-            flat_grads = torch.zeros_like(self.meta_model.get_flat_params())
-            for _ in range(self.q):
-                u = torch.randn_like(self.meta_model.get_flat_params())  # sampled query direction
-                flat_grads += self.GradientEstimate(optimizee, model_input, loss_fn, u, self.mu) * u
-            flat_grads /= self.q
+        flat_grads = torch.zeros_like(flat_params)
+        
+        f_x1 = optimizee.model(**model_input)
+        loss_1 = loss_fn(*f_x1)
 
-            flat_grads = [flat_grads * mask for mask in self.param_masks]
+        for _ in range(self.q):
+            u = torch.randn_like(self.meta_model.get_flat_params())  # sampled query direction
+            flat_grads += self.GradientEstimate(optimizee, model_input, loss_1, loss_fn, u, self.mu) * u
+        flat_grads /= self.q
 
-            inputs = [Variable(flat_grad.view(-1, 1).unsqueeze(1)) for flat_grad in flat_grads]
+        flat_grads = [flat_grads * mask for mask in self.param_masks]
+
+        inputs = [Variable(flat_grad.view(-1, 1).unsqueeze(1)) for flat_grad in flat_grads]
 
         deltas = torch.sum(torch.stack([self(x, idx) for idx, x in enumerate(inputs)]), 0)
         # print(torch.norm(deltas))
         flat_params = flat_params + deltas
 
+        # print(deltas.grad)
+
         self.meta_model.set_flat_params(flat_params)
+
         self.meta_model.copy_params_to(optimizee.model)
 
-        return self.meta_model
+        return self.meta_model, loss_1
     
 
-    def populate_ZO_grads(self, meta_model, model_input, loss_fn):
+    def compute_ZO_grads(self, meta_model, model_input, loss_fn):
+        
+        f_x1 = meta_model.model(**model_input)
+        loss1 = loss_fn(*f_x1)
 
         flat_grads = torch.zeros_like(meta_model.get_flat_params())
         for _ in range(self.q):
             u = torch.randn_like(meta_model.get_flat_params())  # sampled query direction
-            flat_grads += self.GradientEstimate(meta_model, model_input, loss_fn, u, self.mu) * u
+            flat_grads += self.GradientEstimate(meta_model, model_input, loss1, loss_fn, u, self.mu) * u
         flat_grads /= self.q
 
-        offset = 0
-        for module in meta_model.model.modules():
-            if len(module._parameters) != 0:
-                for key in module._parameters.keys():
-                    param_shape = module._parameters[key].size()
-                    param_flat_size = reduce(mul, param_shape, 1)
-                    module._parameters[key].grad = flat_grads[
-                                               offset:offset + param_flat_size].view(*param_shape)
-                    offset += param_flat_size
+        return flat_grads
+        # offset = 0
+        # for module in meta_model.model.modules():
+        #     if len(module._parameters) != 0:
+        #         for key in module._parameters.keys():
+        #             param_shape = module._parameters[key].size()
+        #             param_flat_size = reduce(mul, param_shape, 1)
+        #             module._parameters[key].grad = flat_grads[
+        #                                        offset:offset + param_flat_size].view(*param_shape)
+        #             offset += param_flat_size
 
-
-    # def meta_update2(self, optimizee: Optimizee, model_input, loss_fn):
-    #     '''Update model using gradient from model '''
-    #     flat_params = optimizee.get_flat_params()
-
-    #     self.step += 1
-
-    #     flat_grads = torch.zeros_like(self.meta_model.get_flat_params())
-    #     for _ in range(self.q):
-    #         u = torch.randn_like(self.meta_model.get_flat_params())

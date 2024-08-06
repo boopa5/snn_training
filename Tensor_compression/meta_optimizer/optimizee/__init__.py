@@ -12,6 +12,8 @@ class Optimizee():
     def __init__(self, model):
         super(Optimizee, self).__init__()
         self.model = model
+        # for param in self.model.parameters():
+        #     param.requires_grad = False
         # self.loss_fn = loss_fn
 
     
@@ -38,7 +40,8 @@ class Optimizee():
 class MetaModel:
     def __init__(self, model):
         self.model = model
-
+        # for param in self.model.parameters():
+        #     param.requires_grad = False
 
     def reset(self):
         for module in self.model.modules():
@@ -52,6 +55,8 @@ class MetaModel:
 
 
     def set_flat_params(self, flat_params):
+        # torch.nn.utils.vector_to_parameters(flat_params, self.model.parameters())
+
         offset = 0
         for module in self.model.modules():
             if len(module._parameters) != 0:
@@ -59,9 +64,11 @@ class MetaModel:
                     param_shape = module._parameters[key].size()
                     param_flat_size = reduce(mul, param_shape, 1)
                     module._parameters[key] = flat_params[
-                                               offset:offset + param_flat_size].view(*param_shape)
+                                               offset:offset + param_flat_size].view(*param_shape)                           
                     offset += param_flat_size
 
+        # for param in self.model.parameters():
+        #     param.requires_grad = False
 
     def copy_params_from(self, model):
         for modelA, modelB in zip(self.model.parameters(), model.parameters()):
